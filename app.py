@@ -343,7 +343,13 @@ def run_sarvam(path: str, duration: float, api_key: str, lang: str) -> EngineRes
         r.status = "error"; r.error_message = str(e)
     return r
 
-
+@st.cache_resource(show_spinner="Loading IndicWhisper model...")
+def get_indic_pipeline(model_id):
+    return hf_pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
+        device="cpu",
+    )
 def run_shrutam(path: str, api_key: str, language_code: str) -> EngineResult:
     """
     Runs AI4Bharat IndicWhisper locally via HuggingFace transformers.
@@ -374,11 +380,7 @@ def run_shrutam(path: str, api_key: str, language_code: str) -> EngineResult:
 
         model_id = model_map.get(language_code, "openai/whisper-medium")
 
-        pipe = hf_pipeline(
-            "automatic-speech-recognition",
-            model=model_id,
-            device="cpu",
-        )
+        pipe = get_indic_pipeline(model_id)
 
         t0 = time.perf_counter()
         result_out = pipe(path)

@@ -33,8 +33,13 @@ pandas>=2.0.0
 openpyxl>=3.1.2
 numpy>=1.24.0
 
-transformers
-torch
+transformers==4.53.0
+torch==2.7.1
+torchvision==0.22.1
+torchaudio==2.7.1
+sentencepiece
+accelerate
+safetensors
 
 # ── Audio handling ───────────────────────────────────────
 # ffmpeg is a system dependency – on Streamlit Cloud add it
