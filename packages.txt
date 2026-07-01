@@ -1,3 +1,1 @@
-# System packages for Streamlit Cloud (apt-get)
-# Whisper needs ffmpeg to decode audio formats
 ffmpeg
