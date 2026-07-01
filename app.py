@@ -70,13 +70,6 @@ try:
 except Exception:
     GEMINI_AVAILABLE = False
 
-# --- HuggingFace Transformers (IndicWhisper) ------------------------------------------
-try:
-    from transformers import pipeline as hf_pipeline
-    TRANSFORMERS_AVAILABLE = True
-except Exception:
-    TRANSFORMERS_AVAILABLE = False
-
 # WER / CER
 try:
     import jiwer
@@ -110,7 +103,7 @@ except Exception:
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════════════
 SARVAM_API_URL        = "https://api.sarvam.ai/speech-to-text"
-INDIC_WHISPER_MODEL   = "ai4bharat/indicwav2vec_v1_bengali"
+SHRUTAM_API_URL       = "https://api.shrutam.ai/v1/transcribe"
 GEMINI_MODEL          = "gemini-2.0-flash"
 SARVAM_MAX_SECS       = 30.0
 LOG_FILE              = "asr_lab_pro_logs.xlsx"
@@ -343,57 +336,35 @@ def run_sarvam(path: str, duration: float, api_key: str, lang: str) -> EngineRes
         r.status = "error"; r.error_message = str(e)
     return r
 
-@st.cache_resource(show_spinner="Loading IndicWhisper model...")
-def get_indic_pipeline(model_id):
-    return hf_pipeline(
-        "automatic-speech-recognition",
-        model=model_id,
-        device="cpu",
-    )
-def run_shrutam(path: str, api_key: str, language_code: str) -> EngineResult:
-    """
-    Runs AI4Bharat IndicWhisper locally via HuggingFace transformers.
-    Replaces Shrutam (no public API exists).
-    Supports 12 Indian languages. Safe mode on any failure.
-    """
-    
+
+def run_shrutam(path: str, api_key: str, lang: str) -> EngineResult:
+    """Always safe-mode: skips rather than crashes on any failure."""
     r = EngineResult(engine="Shrutam")
-
-    if not TRANSFORMERS_AVAILABLE:
-        r.status = "skipped"
-        r.error_message = "IndicWhisper safe mode: transformers not installed"
-        return r
-
+    if not REQUESTS_AVAILABLE:
+        r.status = "skipped"; r.error_message = "Safe mode: requests unavailable"; return r
+    if not api_key:
+        r.status = "skipped"; r.error_message = "Safe mode: no API key"; return r
     try:
-        # Map language code to IndicWhisper model
-        model_map = {
-            "hi": "ai4bharat/indic-whisper-medium-hi",
-            "ta": "ai4bharat/indic-whisper-medium-ta",
-            "te": "ai4bharat/indic-whisper-medium-te",
-            "kn": "ai4bharat/indic-whisper-medium-kn",
-            "ml": "ai4bharat/indic-whisper-medium-ml",
-            "mr": "ai4bharat/indic-whisper-medium-mr",
-            "bn": "ai4bharat/indic-whisper-medium-bn",
-            "gu": "ai4bharat/indic-whisper-medium-gu",
-            "pa": "ai4bharat/indic-whisper-medium-pa",
-        }
-
-        model_id = model_map.get(language_code, "openai/whisper-medium")
-
-        pipe = get_indic_pipeline(model_id)
-
         t0 = time.perf_counter()
-        result_out = pipe(path)
-
+        with open(path, "rb") as f:
+            data = {} if lang == "auto" else {"language": lang}
+            resp = _requests.post(
+                SHRUTAM_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("audio.wav", f, "audio/wav")},
+                data=data,
+                timeout=60,
+            )
         r.latency_sec = round(time.perf_counter() - t0, 3)
-        r.transcript = result_out.get("text", "").strip()
-        r.detected_language = language_code
-        r.status = "success"
-
+        if resp.status_code == 200:
+            payload = resp.json()
+            r.transcript        = payload.get("text", payload.get("transcript", "")).strip()
+            r.detected_language = payload.get("language", lang)
+            r.status            = "success"
+        else:
+            r.status = "skipped"; r.error_message = f"Safe mode: HTTP {resp.status_code}"
     except Exception as e:
-        r.status = "skipped"
-        r.error_message = f"IndicWhisper safe mode: {e}"
-
+        r.status = "skipped"; r.error_message = f"Safe mode: {e}"
     return r
 
 
@@ -643,7 +614,7 @@ def build_sidebar() -> Dict[str, Any]:
     st.sidebar.markdown("### ☁️ API Keys")
     sarvam_key = st.sidebar.text_input("Sarvam AI Key", type="password",
                                         value=os.environ.get("SARVAM_API_KEY", ""))
-    shrutam_key = st.sidebar.text_input("Shrutam (not used)", type="password",
+    shrutam_key = st.sidebar.text_input("Shrutam Key", type="password",
                                          value=os.environ.get("SHRUTAM_API_KEY", ""),
                                          help="Safe mode if blank or unreachable")
     gemini_key = st.sidebar.text_input("Gemini API Key", type="password",
