@@ -1,0 +1,39 @@
+# ╔══════════════════════════════════════════════════════╗
+# ║      ASR INTELLIGENCE LAB PRO — requirements.txt     ║
+# ║         Streamlit Cloud safe · no system deps        ║
+# ╚══════════════════════════════════════════════════════╝
+
+# ── Streamlit core ───────────────────────────────────────
+streamlit>=1.32.0
+
+# ── Mic recorder (NO sounddevice / NO ALSA) ─────────────
+streamlit-mic-recorder>=0.0.7
+
+# ── Local ASR engines ────────────────────────────────────
+openai-whisper>=20231117
+faster-whisper>=1.0.0
+
+# ── Google Gemini SDK ────────────────────────────────────
+google-generativeai>=0.7.0
+
+# ── HTTP client (Sarvam AI / Shrutam) ────────────────────
+requests>=2.31.0
+
+# ── Metrics ──────────────────────────────────────────────
+jiwer>=3.0.3
+
+# ── Text-to-Speech ───────────────────────────────────────
+gTTS>=2.5.0
+
+# ── Charts ───────────────────────────────────────────────
+plotly>=5.18.0
+
+# ── Data / Excel logging ─────────────────────────────────
+pandas>=2.0.0
+openpyxl>=3.1.2
+numpy>=1.24.0
+
+# ── Audio handling ───────────────────────────────────────
+# ffmpeg is a system dependency – on Streamlit Cloud add it
+# via packages.txt (see below). On local, install separately.
+# PyAudio intentionally excluded (system-level, not needed).
