@@ -23,14 +23,23 @@ import datetime as dt
 import traceback
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Any, List
-
+import soundfile as sf
+from transformers import pipeline as hf_pipeline
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 # ─────────────────────────────────────────────────────────────────────────────────────
 # THIRD-PARTY (always available on Streamlit Cloud)
 # ─────────────────────────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+from huggingface_hub import hf_hub_download, snapshot_download
+#from speech_encoder import SpeechEncoder
+#from asr_model import ASRModel, EncoderProjectorLinear, EncoderDownsamplerCov1d
+#from inference_config import inference_config, model_config
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import soundfile as sf
+import torch
+import os
 # ─────────────────────────────────────────────────────────────────────────────────────
 # OPTIONAL SOFT IMPORTS — every block is isolated; missing package = graceful skip
 # ─────────────────────────────────────────────────────────────────────────────────────
@@ -104,6 +113,7 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════════════
 SARVAM_API_URL        = "https://api.sarvam.ai/speech-to-text"
 SHRUTAM_API_URL       = "https://api.shrutam.ai/v1/transcribe"
+SHRUTAM2_AI_URL = "https://api.shrutam.ai/v2/transcribe"
 GEMINI_MODEL          = "gemini-2.0-flash"
 SARVAM_MAX_SECS       = 30.0
 LOG_FILE              = "asr_lab_pro_logs.xlsx"
@@ -143,6 +153,7 @@ ENGINE_COLORS = {
     "Sarvam AI":      "#F59E0B",
     "Shrutam":        "#EC4899",
     "Gemini":         "#10B981",
+    "Shrutam2":       "#8B5CF6",
 }
 
 SARVAM_LANG_MAP = {
@@ -337,7 +348,7 @@ def run_sarvam(path: str, duration: float, api_key: str, lang: str) -> EngineRes
     return r
 
 
-def run_shrutam(path: str, api_key: str, lang: str) -> EngineResult:
+
     """Always safe-mode: skips rather than crashes on any failure."""
     r = EngineResult(engine="Shrutam")
     if not REQUESTS_AVAILABLE:
@@ -367,35 +378,171 @@ def run_shrutam(path: str, api_key: str, lang: str) -> EngineResult:
         r.status = "skipped"; r.error_message = f"Safe mode: {e}"
     return r
 
+# ── IndicWhisper model map (AI4Bharat, HuggingFace) ─────────────────────────────────
+MODEL_MAP = {
+    "hi": "ai4bharat/indic-whisper-medium-hi",
+    "ta": "ai4bharat/indic-whisper-medium-ta",
+    "te": "ai4bharat/indic-whisper-medium-te",
+    "kn": "ai4bharat/indic-whisper-medium-kn",
+    "ml": "ai4bharat/indic-whisper-medium-ml",
+}
+
+@st.cache_resource(show_spinner="⏳ Loading Shrutam2 model...")
+def get_shrutam2_pipeline(model_id: str):
+    return hf_pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
+        device=0 if torch.cuda.is_available() else -1
+    )
+
+def run_shrutam2(path: str, api_key: str, lang: str) -> EngineResult:
+    r = EngineResult(engine="Shrutam2")
+
+    try:
+        model_id = MODEL_MAP.get(lang, "openai/whisper-small")
+        pipe = get_shrutam2_pipeline(model_id)
+
+        t0 = time.perf_counter()
+        out = pipe(path)
+
+        r.latency_sec = round(time.perf_counter() - t0, 3)
+        r.transcript = out["text"].strip() if isinstance(out, dict) else ""
+        r.detected_language = lang
+        r.status = "success"
+
+    except Exception as e:
+        r.status = "error"
+        r.error_message = str(e)
+
+    return r
+
 
 def run_gemini(path: str, api_key: str, lang: str) -> EngineResult:
-    """Always safe-mode: skips rather than crashes on any failure."""
+    """
+    Google Gemini multimodal transcription.
+    - Strict 60s total timeout
+    - File PROCESSING state aborts after 20s (never hangs UI)
+    - Actionable error messages for every known failure mode
+    """
     r = EngineResult(engine="Gemini")
+
     if not GEMINI_AVAILABLE:
-        r.status = "error"; r.error_message = "google-generativeai not installed"; return r
+        r.status        = "error"
+        r.error_message = "google-generativeai not installed. Run: pip install google-generativeai"
+        return r
+
     if not api_key:
-        r.status = "skipped"; r.error_message = "Safe mode: no Gemini API key"; return r
+        r.status        = "skipped"
+        r.error_message = "No Gemini API key. Add it in the sidebar (get one free at aistudio.google.com)."
+        return r
+
+    uploaded_file = None
+    t0 = time.perf_counter()
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(GEMINI_MODEL)
+
+        # ── Build prompt ─────────────────────────────────────────────────────────────
         lang_label = LANG_CODE_TO_LABEL.get(lang, "the spoken language")
         if lang == "auto":
-            prompt = "Transcribe the audio verbatim. Output only the transcript text, nothing else."
+            prompt = (
+                "Transcribe every spoken word in the audio verbatim. "
+                "Auto-detect the language. "
+                "Output ONLY the raw transcript text — no labels, no quotes, no commentary."
+            )
         else:
-            prompt = (f"Transcribe the audio verbatim in {lang_label}. "
-                      "Output only the transcript text, nothing else.")
-        t0 = time.perf_counter()
-        uploaded = genai.upload_file(path=path, mime_type="audio/wav")
-        resp = model.generate_content([prompt, uploaded])
-        r.latency_sec       = round(time.perf_counter() - t0, 3)
-        text                = (getattr(resp, "text", "") or "").strip()
+            prompt = (
+                f"Transcribe every spoken word in the audio verbatim in {lang_label}. "
+                "Output ONLY the raw transcript text — no labels, no quotes, no commentary."
+            )
+
+        # ── Upload file ──────────────────────────────────────────────────────────────
+        uploaded_file = genai.upload_file(path=path, mime_type="audio/wav")
+
+        # ── Wait for PROCESSING → ACTIVE with hard 20s timeout ──────────────────────
+        processing_start = time.time()
+        MAX_PROCESSING_WAIT = 20  # seconds
+
+        while uploaded_file.state.name == "PROCESSING":
+            if time.time() - processing_start > MAX_PROCESSING_WAIT:
+                r.status        = "error"
+                r.error_message = (
+                    f"Gemini file stuck in PROCESSING for >{MAX_PROCESSING_WAIT}s. "
+                    "Try a shorter or simpler audio file."
+                )
+                return r
+            time.sleep(1.5)
+            try:
+                uploaded_file = genai.get_file(uploaded_file.name)
+            except Exception:
+                break  # get_file failed — try generate anyway
+
+        if uploaded_file.state.name == "FAILED":
+            r.status        = "error"
+            r.error_message = "Gemini rejected the audio file (FAILED state). Try a different WAV file."
+            return r
+
+        # ── Check total elapsed time before generate_content ─────────────────────────
+        elapsed = time.time() - t0
+        if elapsed > 55:
+            r.status        = "error"
+            r.error_message = f"Gemini timed out before generating (took {elapsed:.0f}s in upload/processing)."
+            return r
+
+        # ── Generate transcript ───────────────────────────────────────────────────────
+        response = model.generate_content(
+            [prompt, uploaded_file],
+            generation_config=genai.GenerationConfig(
+                temperature=0.0,        # deterministic output for transcription
+                max_output_tokens=4096,
+            ),
+            request_options={"timeout": 60},  # hard API call timeout
+        )
+
+        r.latency_sec = round(time.perf_counter() - t0, 3)
+
+        # ── Extract text safely from response ────────────────────────────────────────
+        text = ""
+        if hasattr(response, "text") and response.text:
+            text = response.text.strip()
+        elif hasattr(response, "candidates") and response.candidates:
+            for candidate in response.candidates:
+                if hasattr(candidate, "content") and candidate.content.parts:
+                    text = "".join(
+                        p.text for p in candidate.content.parts if hasattr(p, "text")
+                    ).strip()
+                    if text:
+                        break
+
         r.transcript        = text
         r.detected_language = lang
         r.status            = "success" if text else "error"
         if not text:
-            r.error_message = "Gemini returned empty response"
+            r.error_message = "Gemini returned an empty transcript. Try a clearer audio file."
+
     except Exception as e:
-        r.status = "skipped"; r.error_message = f"Safe mode: {e}"
+        err = str(e)
+        r.status = "skipped"
+        if "API_KEY_INVALID" in err or "API key not valid" in err:
+            r.error_message = "Invalid Gemini API key — get a valid one at https://aistudio.google.com"
+        elif "quota" in err.lower():
+            r.error_message = "Gemini quota exceeded. Wait 1 minute or upgrade your plan."
+        elif "timeout" in err.lower() or "deadline" in err.lower():
+            r.error_message = "Gemini API call timed out (60s). Try a shorter audio file."
+        elif "upload" in err.lower():
+            r.error_message = "Gemini file upload failed. Run: pip install --upgrade google-generativeai"
+        else:
+            r.error_message = f"Gemini error: {err[:250]}"
+
+    finally:
+        # Always clean up uploaded file — best effort, never crashes
+        if uploaded_file is not None:
+            try:
+                genai.delete_file(uploaded_file.name)
+            except Exception:
+                pass
+
     return r
 
 
@@ -433,9 +580,14 @@ def run_benchmark(path: str, duration: float, cfg: Dict[str, Any]) -> List[Engin
 
     if enabled.get("Shrutam"):
         _tick("☁️ Running Shrutam…")
-        results.append(run_shrutam(path, cfg["shrutam_key"], cfg["lang"]))
+        # results.append(run_shrutam(path, cfg["shrutam_key"], cfg["lang"]))
         done += 1
 
+    if enabled.get("Shrutam2"):
+       _tick("☁️ Running Shrutam2…")
+       results.append(run_shrutam2(path, cfg["shrutam_key"], cfg["lang"]))
+       done += 1
+       
     if enabled.get("Gemini"):
         _tick("🤖 Running Gemini…")
         results.append(run_gemini(path, cfg["gemini_key"], cfg["lang"]))
@@ -629,8 +781,8 @@ def build_sidebar() -> Dict[str, Any]:
         "Whisper":        col_a.checkbox("Whisper",         value=True),
         "Faster-Whisper": col_b.checkbox("Faster-Whisper",  value=True),
         "Sarvam AI":      col_a.checkbox("Sarvam AI",       value=True),
-        "Shrutam":        col_b.checkbox("Shrutam",         value=True),
         "Gemini":         col_a.checkbox("Gemini",          value=True),
+        "Shrutam2":       col_b.checkbox("Shrutam2",        value=True),
     }
 
     # Reference
