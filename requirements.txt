@@ -9,6 +9,8 @@ streamlit>=1.32.0
 # ── Mic recorder (NO sounddevice / NO ALSA) ─────────────
 streamlit-mic-recorder>=0.0.7
 
+soundfile
+
 # ── Local ASR engines ────────────────────────────────────
 openai-whisper>=20231117
 faster-whisper>=1.0.0
@@ -40,7 +42,8 @@ torchaudio==2.7.1
 sentencepiece
 accelerate
 safetensors
-
+soundfile
+librosa
 # ── Audio handling ───────────────────────────────────────
 # ffmpeg is a system dependency – on Streamlit Cloud add it
 # via packages.txt (see below). On local, install separately.
